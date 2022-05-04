@@ -55,11 +55,11 @@ function keyboard_controller(KEY::Channel,
     end
 end
 
-# sorts cars and gives closest 
+# return the closest cars in the fleet in front, behind, and in the adjacent lanes to ego. 
 function closest_cars(ids, ego, movables, n, avoid_distance, rear_distance, follow_distance, road, lanewidth)
     dists = []
     for (i, m) ∈ movables
-        # return the vehicles that are very close, and if they are in the same lane return them when they're further
+        # returns any vehicles that are very close, and if they are in the same lane return them when they're a bit further
         if(curLane(ego, road, lanewidth) == m.target_lane && carAhead(ego, m, road) == false)
             if(norm(ego.position-m.position) < rear_distance)
                 push!(dists, (norm(ego.position-m.position), i))
@@ -80,7 +80,7 @@ function closest_cars(ids, ego, movables, n, avoid_distance, rear_distance, foll
     end
 end
 
-#takes in ego and lets us know what lane it is currently in (curved segment)
+#takes in ego vehicle and road and lets us know what lane the ego is currently in (curved segment)
 function curLane(ego, road::CurvedSegment, lanewidth)
     x = norm(ego.position - road.center)
     lane1left = road.radius
@@ -97,7 +97,7 @@ function curLane(ego, road::CurvedSegment, lanewidth)
 end
 
 #NEED TO FIX
-#takes in ego and lets us know what lane it is currently in (straight segment)
+#takes in ego vehicle and road and lets us know what lane the ego is currently in (straight segment)
 function curLane(ego, road::StraightSegment, lanewidth)
     print(ego.position)
     print(road.start)
@@ -118,7 +118,7 @@ function curLane(ego, road::StraightSegment, lanewidth)
     end
 end
 
-#takes in ego and fleet and determines which one is actually in front (curved segment)
+# takes in ego car and a different car and returns true if fleet is in front (curved segment)
 function carAhead(ego, fleet, road::CurvedSegment)
     center = road.center
     ego_delta = ego.position - center
@@ -133,7 +133,7 @@ function carAhead(ego, fleet, road::CurvedSegment)
     end
 end
 
-#takes in ego and fleet and determines which one is actually in front (straight segment)
+# takes in ego car and a different car and returns true if fleet is in front (straight segment)
 function carAhead(ego, fleet, road::StraightSegment)
     if(ego.position[1] < fleet.position[1])
         return true
@@ -142,25 +142,18 @@ function carAhead(ego, fleet, road::StraightSegment)
     end
 end
 
-# determines if lane switch should happen to right or left
-function switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K₂)  
+# determines if lane switch should happen to right or left, returns switchlane (-1, 0, or 1 which represents left, stay, or right)
+function switchlanes(ego, fleet, cartoright, cartoleft, road)  
     lane = curLane(ego, road.segments[1], road.lanewidth)      
     switchlane = 0
     if(cartoright[2] == true && cartoleft[2] == true)
-        #both lanes occupied
-        #println("need to switch lanes but can't, other lanes occupied")
+        #both lanes occupied, can't execute
     elseif(cartoleft[2] == true)
-        if(lane == 3)
-            #println("lane switch needed to right, impossible")
-        else
-            #println("lane switch needed to right")
+        if(lane != 3)
             switchlane = 1
         end
     elseif(cartoright[2] == true)
-        if(lane == 1)
-            #println("lane switch needed to left, impossible")
-        else
-            #println("lane switch needed to left")
+        if(lane != 1)
             switchlane = -1
         end
     else
@@ -171,6 +164,7 @@ function switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K�
             switchlane = 1
         else
             if(cartoright[1] > 0 && cartoleft[1] > 0)
+                # both lanes have a car, choose to merge to the one that gives us more space
                 if(norm(ego.position - fleet[cartoright[1]].position) - norm(ego.position - fleet[cartoleft[1]].position) > 0)
                     switchlane = 1
                 else
@@ -188,18 +182,21 @@ function switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K�
     switchlane
 end
 
-#plots velocity portion of trajectory
+# updates command to change the velocity of the car and returns switchlane which indicates what lane a switch is needed to (-1, 0, or 1 which represents left, stay, or right)
 function plot_traj(ego, fleet, command, velocity_step, road, step_size, K₁, K₂)
     lane = curLane(ego, road.segments[1], road.lanewidth)
     switchlane = 0
-    # getting indices of nearby cars [index of car, whether car has been found behind/infront]
+    
+    # represents the two closest vehicles in current lane, and two closest possible in adjacent lanes 
+    # [index of car, whether car has been found]
     carbehind = [-1, false]
     carinfront = [-1, false]
     cartoleft = [-1, false]
     cartoright = [-1, false]
+
+    # filling out the info about the closest cars based off the nearby cars we have already located
     for i in 1:length(fleet)
         if(fleet[i].target_lane == lane)
-            #NEED TO FIX to get the actual one that's in front
             if(carAhead(ego, fleet[i], road.segments[1]) == true)
                 # pick the one with the lower velocity in the event there are two cars in front 
                 if(carinfront[2] == true)
@@ -226,52 +223,47 @@ function plot_traj(ego, fleet, command, velocity_step, road, step_size, K₁, K�
         end
     end
 
-    #if cars are ahead and behind
+    # if there are cars both ahead and behind of us
     if(carinfront[2] == true && carbehind[2] == true)
-        #println("cars ahead and behind")
         frontspeed = fleet[carinfront[1]].speed
         backspeed = fleet[carbehind[1]].speed
-        # back car is too fast for the ego
+        # if the back car is too fast for the ego
         if(backspeed > ego.speed)
             if(frontspeed > backspeed)
             #if front car is fast enough, accelerate
-                command[1] = (frontspeed - ego.speed)*step_size
+                command[1] = (frontspeed - ego.speed)
             else
-                switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K₂)
+                # back car is too fast for the front car
+                switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road)
                 command[1] = (frontspeed + backspeed)/2*step_size
-                #println("car behind is too fast for car in front");
             end
         #back car is slower than the ego
         elseif(frontspeed > ego.speed)
             command[1] = velocity_step*step_size
         else
             command[1] -= max(ego.speed - frontspeed, ego.speed - backspeed)*step_size
-            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K₂)
-            #println("car ahead and behind are too slow")
+            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road)
         end
 
     # if there is only a car ahead
     elseif(carinfront[2] == true)
-        #println("cars ahead only")
         frontspeed = fleet[carinfront[1]].speed
         # if car ahead is faster, speed up a regular amount
         if(frontspeed > ego.speed)
             command[1] = velocity_step*step_size
         else
-            # otherwise slow down, maybe change lane?
+            # otherwise slow down and change lane?
             command[1] -= (ego.speed - frontspeed)
-            #lane change
-            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K₂)
+            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road)
         end
 
     # if there is only a car behind
     elseif(carbehind[2] == true)
-        #println("cars behind only")
         backspeed = fleet[carbehind[1]].speed
         # if car behind is faster, speed up by the diff in speeds
         if(backspeed > ego.speed)
             command[1] = backspeed - ego.speed
-            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road, command, K₁, K₂)
+            switchlane = switchlanes(ego, fleet, cartoright, cartoleft, road)
         else
             #otherwise, speed up a regular amount
             command[1] = velocity_step*step_size
@@ -299,13 +291,16 @@ function controller(CMD::Channel,
         ego_meas = fetch(SENSE)
         fleet_meas = fetch(SENSE_FLEET)
 
-        #get the closest cars
-        num_viewed = length(fleet_meas)
-        closest_ids = []
+        # constants that represent the distances that other cars can be to us before our car starts to avoid them
         avoid_distance = 8.0
         follow_distance = 18.0
         rear_distance = 24.0
+
+        # get the indices of all of the closest cars
+        num_viewed = length(fleet_meas)
+        closest_ids = []
         closest_cars(closest_ids, ego_meas, fleet_meas, num_viewed, avoid_distance, rear_distance, follow_distance, road.segments[1], road.lanewidth)
+        # create an array of the closest cars to us
         fleet = Any[]
         for i in 1:length(closest_ids)
             push!(fleet, fleet_meas[closest_ids[i]])
@@ -313,12 +308,13 @@ function controller(CMD::Channel,
         command = [0.0,0.0]
 
         lane = curLane(ego_meas, road.segments[1], road.lanewidth)
+
         # change velocity and determine if lane change is required
         switchlane = 0
         velocity_step = 15
         switchlane = plot_traj(ego_meas, fleet, command, velocity_step, road, step_size, K₁, K₂)
         
-        #calculating heading to follow current lane, or switch to given lane
+        # calculating heading to follow current lane, or switch to given lane if needed
         seg = road.segments[1]
         if(switchlane == -1 || switchlane == 1)
             newlane = lane + switchlane
@@ -331,11 +327,5 @@ function controller(CMD::Channel,
             command[2] = max(min(δ, π/4.0), -π/4.0)        
         end
         @replace(CMD, command)
-
-        #if disp
-         #   print("\e[2K")
-          #  print("\e[1G")
-           # @printf("Command: %f %f, speed: %f, segment: %s", command..., ego_meas.speed, seg)
-        #end
     end
 end
